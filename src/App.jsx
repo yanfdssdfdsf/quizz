@@ -81,6 +81,104 @@ const clearSession = () => {
 };
 
 /* ════════════════════════════════════════════════════
+   LOGGING SYSTEM
+════════════════════════════════════════════════════ */
+const STORAGE_LOGS = "quizmaster_logs";
+const STORAGE_ERRORS = "quizmaster_errors";
+
+const getIP = async () => {
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    const data = await res.json();
+    return data.ip;
+  } catch {
+    return "Unknown";
+  }
+};
+
+let cachedIP = null;
+const ensureIP = async () => {
+  if (!cachedIP) cachedIP = await getIP();
+  return cachedIP;
+};
+
+const formatTime = () => {
+  const now = new Date();
+  return now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+
+const logAction = async (action, details = "") => {
+  const ip = await ensureIP();
+  const time = formatTime();
+  const logEntry = {
+    ip,
+    time,
+    action,
+    details,
+    timestamp: Date.now()
+  };
+  
+  // Console log
+  console.log(`🟢 ${ip} | ${time} | ${action}${details ? ` | ${details}` : ""}`);
+  
+  // Stockage
+  try {
+    const logs = JSON.parse(localStorage.getItem(STORAGE_LOGS) || "[]");
+    logs.unshift(logEntry);
+    if (logs.length > 1000) logs.length = 1000; // Garder max 1000 logs
+    localStorage.setItem(STORAGE_LOGS, JSON.stringify(logs));
+  } catch (e) {
+    console.error("Erreur sauvegarde log:", e);
+  }
+};
+
+const logError = (problem, message = "", code = 0) => {
+  const time = formatTime();
+  const errorEntry = {
+    time,
+    problem,
+    message,
+    code,
+    timestamp: Date.now()
+  };
+  
+  // Console log
+  console.error(`🔴 ${time} | ${problem} | ${message} | CODE: ${code}`);
+  
+  // Stockage
+  try {
+    const errors = JSON.parse(localStorage.getItem(STORAGE_ERRORS) || "[]");
+    errors.unshift(errorEntry);
+    if (errors.length > 500) errors.length = 500; // Garder max 500 erreurs
+    localStorage.setItem(STORAGE_ERRORS, JSON.stringify(errors));
+  } catch (e) {
+    console.error("Erreur sauvegarde error:", e);
+  }
+};
+
+const getLogs = () => {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_LOGS) || "[]");
+  } catch {
+    return [];
+  }
+};
+
+const getErrors = () => {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_ERRORS) || "[]");
+  } catch {
+    return [];
+  }
+};
+
+const clearLogs = () => {
+  localStorage.removeItem(STORAGE_LOGS);
+  localStorage.removeItem(STORAGE_ERRORS);
+  console.log("🧹 Logs cleared");
+};
+
+/* ════════════════════════════════════════════════════
    COMPOSANTS SOUS
 ════════════════════════════════════════════════════ */
 function FloatBg() {
@@ -197,17 +295,29 @@ export default function App() {
 
   /* ═══ AUTH ACTIONS ═══ */
   const handleRegister = () => {
-    if(!email.trim() || !password.trim()) return showToast("Remplis tous les champs !","error");
-    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return showToast("Email invalide !","error");
-    if(password.length < 6) return showToast("Mot de passe trop court (min 6 caractères) !","error");
+    if(!email.trim() || !password.trim()){
+      logError("REGISTER_FAILED", "Champs vides", 400);
+      return showToast("Remplis tous les champs !","error");
+    }
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+      logError("REGISTER_FAILED", "Email invalide", 400);
+      return showToast("Email invalide !","error");
+    }
+    if(password.length < 6){
+      logError("REGISTER_FAILED", "Mot de passe trop court", 400);
+      return showToast("Mot de passe trop court (min 6 caractères) !","error");
+    }
     
     const users = getUsers();
-    if(users[email]) return showToast("Email déjà utilisé !","error");
+    if(users[email]){
+      logError("REGISTER_FAILED", "Email déjà utilisé", 409);
+      return showToast("Email déjà utilisé !","error");
+    }
     
     const pseudo = email.split("@")[0];
     users[email] = {
       email,
-      password, // WARNING: en production, JAMAIS stocker mdp en clair !
+      password,
       pseudo,
       history: [],
       createdAt: Date.now()
@@ -217,29 +327,39 @@ export default function App() {
     setCurrentUser(users[email]);
     setName(pseudo);
     setPage("home");
+    logAction("USER_REGISTERED", `Email: ${email}, Pseudo: ${pseudo}`);
     showToast("Compte créé avec succès ! 🎉","info");
   };
 
   const handleLogin = () => {
-    if(!email.trim() || !password.trim()) return showToast("Remplis tous les champs !","error");
+    if(!email.trim() || !password.trim()){
+      logError("LOGIN_FAILED", "Champs vides", 400);
+      return showToast("Remplis tous les champs !","error");
+    }
     
     const users = getUsers();
     const user = users[email];
-    if(!user || user.password !== password) return showToast("Email ou mot de passe incorrect !","error");
+    if(!user || user.password !== password){
+      logError("LOGIN_FAILED", "Identifiants incorrects", 401);
+      return showToast("Email ou mot de passe incorrect !","error");
+    }
     
     saveSession(email);
     setCurrentUser(user);
     setName(user.pseudo);
     setPage("home");
+    logAction("USER_LOGIN", `Email: ${email}, Pseudo: ${user.pseudo}`);
     showToast(`Bienvenue ${user.pseudo} ! 👋`,"info");
   };
 
   const handleLogout = () => {
+    const pseudo = currentUser?.pseudo || "Unknown";
     clearSession();
     setCurrentUser(null);
     setPage("auth");
     setEmail("");
     setPassword("");
+    logAction("USER_LOGOUT", `Pseudo: ${pseudo}`);
     showToast("Déconnecté","info");
   };
 
@@ -335,9 +455,18 @@ export default function App() {
   const removeKeyword = kw => setCustomKeywords(p=>p.filter(k=>k!==kw));
 
   const createRoom = () => {
-    if(!playerName.trim()) return showToast("Entre ton pseudo !","error");
-    if(!selCats.length && !customKeywords.length) return showToast("Ajoute au moins un thème !","error");
-    if(!isPublic && !roomPwd.trim()) return showToast("Mets un mot de passe !","error");
+    if(!playerName.trim()){
+      logError("CREATE_ROOM_FAILED", "Pas de pseudo", 400);
+      return showToast("Entre ton pseudo !","error");
+    }
+    if(!selCats.length && !customKeywords.length){
+      logError("CREATE_ROOM_FAILED", "Pas de thème", 400);
+      return showToast("Ajoute au moins un thème !","error");
+    }
+    if(!isPublic && !roomPwd.trim()){
+      logError("CREATE_ROOM_FAILED", "Pas de mot de passe", 400);
+      return showToast("Mets un mot de passe !","error");
+    }
     const r = {
       code:randCode(), host:playerName, isPublic, password:isPublic?"":roomPwd,
       categories:selCats, keywords:customKeywords, difficulty:diff, numQ,
@@ -346,18 +475,32 @@ export default function App() {
     };
     ROOMS[r.code]=r;
     setRoom(r); setIsHost(true); setPage("lobby");
+    logAction("ROOM_CREATED", `Code: ${r.code}, Host: ${playerName}, ${r.isPublic?"Public":"Privé"}`);
   };
 
   const joinRoom = (code,pwd) => {
     const r = ROOMS[code.toUpperCase()];
-    if(!r)                          return showToast("Room introuvable !","error");
-    if(r.status!=="lobby")          return showToast("Partie déjà lancée !","error");
-    if(!r.isPublic && r.password!==pwd) return showToast("Mot de passe incorrect !","error");
-    if(r.players.some(p=>p.name===playerName)) return showToast("Pseudo déjà pris !","error");
+    if(!r){
+      logError("JOIN_ROOM_FAILED", `Room ${code} introuvable`, 404);
+      return showToast("Room introuvable !","error");
+    }
+    if(r.status!=="lobby"){
+      logError("JOIN_ROOM_FAILED", `Room ${code} déjà lancée`, 409);
+      return showToast("Partie déjà lancée !","error");
+    }
+    if(!r.isPublic && r.password!==pwd){
+      logError("JOIN_ROOM_FAILED", `Mot de passe incorrect pour ${code}`, 401);
+      return showToast("Mot de passe incorrect !","error");
+    }
+    if(r.players.some(p=>p.name===playerName)){
+      logError("JOIN_ROOM_FAILED", `Pseudo ${playerName} déjà pris`, 409);
+      return showToast("Pseudo déjà pris !","error");
+    }
     r.players.push({name:playerName,score:0,id:uid()});
     setRoom({...r}); setIsHost(false);
     setSelCats(r.categories||[]); setCustomKeywords(r.keywords||[]); setDiff(r.difficulty); setNumQ(r.numQ);
     setPage("lobby");
+    logAction("ROOM_JOINED", `Code: ${code}, Player: ${playerName}`);
   };
 
   const kickPlayer = (playerId) => {
@@ -385,15 +528,26 @@ export default function App() {
     try {
       const themes = [...selCats, ...customKeywords].join(", ");
       
-      const prompt = `Génère ${numQ} questions de quiz en français.
-Thèmes: ${themes}
+      // Prompt ultra-simple et direct
+      const prompt = `Tu es un générateur de quiz. Crée ${numQ} questions en français sur: ${themes}
+
 Difficulté: ${diff}
 
-RÉPONDS UNIQUEMENT AVEC CE FORMAT (sans \`\`\`json):
+IMPORTANT - MÉDIAS (40% des questions):
+- Images: URLs Wikimedia Commons (ex: https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Tour_Eiffel_Wikimedia_Commons.jpg/800px-Tour_Eiffel.jpg)
+- Audio: YouTube embed (ex: https://www.youtube.com/embed/dQw4w9WgXcQ)
+- Vidéo: YouTube embed (ex: https://www.youtube.com/embed/jNQXAC9IVRw)
+
+RÉPONDS UNIQUEMENT avec ce JSON (PAS de texte avant/après, PAS de \`\`\`):
 {
   "questions": [
     {
       "question": "Quelle est la capitale de la France ?",
+      "media": {
+        "type": "image",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Tour_Eiffel_Wikimedia_Commons.jpg/800px-Tour_Eiffel.jpg",
+        "caption": "Monument parisien"
+      },
       "options": ["Paris", "Londres", "Berlin", "Madrid"],
       "correctAnswer": 0
     },
@@ -405,114 +559,198 @@ RÉPONDS UNIQUEMENT AVEC CE FORMAT (sans \`\`\`json):
   ]
 }
 
-Règles:
-- Exactement ${numQ} questions
-- 4 options par question
-- correctAnswer = index (0, 1, 2, ou 3)
-- Questions claires et intéressantes
-- Difficulté ${diff}`;
+Si pas de média: ne mets PAS la clé "media".
+${numQ} questions exactement. 4 options par question.`;
 
-      console.log("🚀 Génération avec Gemini 1.5 Flash...");
+      console.log("🚀 Génération quiz avec Gemini Flash");
+      logAction("QUIZ_GENERATION_START", `${numQ}Q - ${themes}`);
       
-      // Utiliser gemini-1.5-flash au lieu de 2.0-exp (plus stable)
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=AIzaSyDM30fn3L2_R3i53KBhR4ZlGmDE6av8qnw",{
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json"
-        },
-        mode: "cors", // Explicitly set CORS mode
-        body:JSON.stringify({
-          contents:[{parts:[{text:prompt}]}],
-          generationConfig:{
-            temperature:0.8,
-            maxOutputTokens:8000
-          }
-        })
-      });
+      // Appel API avec timeout
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
       
-      if(!res.ok){
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=AIzaSyCfwmCwhNS6WlleXERovQTmfk6x1EG8Izw",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 4096,
+              topP: 0.9,
+              topK: 40
+            }
+          })
+        }
+      );
+      
+      clearTimeout(timeout);
+      
+      if (!res.ok) {
         const errText = await res.text();
-        console.error("❌ HTTP Error:", res.status, errText);
-        throw new Error(`Erreur API ${res.status}: ${errText.substring(0,100)}`);
+        console.error("❌ Erreur HTTP:", res.status, errText);
+        logError("API_HTTP_ERROR", `Status ${res.status}`, res.status);
+        
+        // Messages d'erreur spécifiques
+        if (res.status === 429) throw new Error("Trop de requêtes. Attends 1 minute et réessaie.");
+        if (res.status === 403) throw new Error("Clé API invalide ou révoquée.");
+        if (res.status === 400) throw new Error("Requête mal formée.");
+        
+        throw new Error(`Erreur API (${res.status})`);
       }
       
       const data = await res.json();
-      console.log("📦 Raw response:", data);
+      console.log("📦 Réponse Gemini:", data);
       
-      if(!data.candidates?.[0]?.content?.parts?.[0]?.text){
-        console.error("❌ Invalid response structure:", data);
-        throw new Error("Réponse API invalide");
+      // Vérifier la structure de réponse
+      if (!data.candidates || data.candidates.length === 0) {
+        console.error("❌ Pas de candidats:", data);
+        logError("NO_CANDIDATES", JSON.stringify(data), 500);
+        throw new Error("Réponse API vide");
       }
       
-      let text = data.candidates[0].content.parts[0].text;
-      console.log("📝 Raw text:", text.substring(0,300));
+      const candidate = data.candidates[0];
       
+      // Vérifier si bloqué par safety filters
+      if (candidate.finishReason === "SAFETY") {
+        console.error("❌ Bloqué par safety filters:", candidate.safetyRatings);
+        logError("SAFETY_BLOCK", "Contenu bloqué", 400);
+        throw new Error("Contenu bloqué par les filtres de sécurité. Essaie un autre thème.");
+      }
+      
+      if (!candidate.content || !candidate.content.parts || !candidate.content.parts[0]) {
+        console.error("❌ Structure invalide:", candidate);
+        logError("INVALID_STRUCTURE", JSON.stringify(candidate), 500);
+        throw new Error("Structure de réponse invalide");
+      }
+      
+      let text = candidate.content.parts[0].text;
+      console.log("📝 Texte brut (200 chars):", text.substring(0, 200));
+      
+      // Nettoyage ultra-agressif
       text = text.trim();
+      
+      // Enlever markdown
       text = text.replace(/```json\s*/gi, "");
+      text = text.replace(/```javascript\s*/gi, "");
       text = text.replace(/```\s*/g, "");
       
+      // Trouver le JSON (entre premier { et dernier })
       const firstBrace = text.indexOf('{');
       const lastBrace = text.lastIndexOf('}');
       
-      if(firstBrace === -1 || lastBrace === -1){
-        console.error("❌ No JSON found in:", text);
+      if (firstBrace === -1 || lastBrace === -1) {
+        console.error("❌ Pas de JSON trouvé dans:", text);
+        logError("NO_JSON", "Aucun JSON trouvé", 500);
         throw new Error("Pas de JSON dans la réponse");
       }
       
       text = text.substring(firstBrace, lastBrace + 1);
-      console.log("🧹 Cleaned:", text.substring(0,300));
+      console.log("🧹 JSON extrait (200 chars):", text.substring(0, 200));
       
+      // Parser le JSON
       let parsed;
       try {
         parsed = JSON.parse(text);
-      } catch(e) {
-        console.error("❌ JSON parse error:", e.message);
-        console.error("Problematic text:", text);
-        throw new Error("JSON invalide: " + e.message);
+      } catch (e) {
+        console.error("❌ Erreur parsing:", e.message);
+        console.error("JSON problématique:", text);
+        logError("JSON_PARSE_ERROR", e.message, 500);
+        throw new Error(`JSON invalide: ${e.message}`);
       }
       
-      if(!parsed.questions || !Array.isArray(parsed.questions)){
-        console.error("❌ No questions array:", parsed);
-        throw new Error("Format invalide (pas de tableau questions)");
+      // Valider la structure
+      if (!parsed.questions || !Array.isArray(parsed.questions)) {
+        console.error("❌ Pas de tableau questions:", parsed);
+        logError("NO_QUESTIONS_ARRAY", JSON.stringify(parsed), 500);
+        throw new Error("Format invalide: pas de tableau 'questions'");
       }
       
-      const valid = parsed.questions.filter(q => 
-        q.question && 
-        Array.isArray(q.options) && 
-        q.options.length === 4 &&
-        typeof q.correctAnswer === 'number' &&
-        q.correctAnswer >= 0 && 
-        q.correctAnswer <= 3
-      );
-      
-      if(valid.length === 0){
-        console.error("❌ No valid questions");
-        throw new Error("Aucune question valide");
+      if (parsed.questions.length === 0) {
+        console.error("❌ Tableau vide");
+        logError("EMPTY_QUESTIONS", "0 questions", 500);
+        throw new Error("Aucune question générée");
       }
       
-      console.log(`✅ ${valid.length}/${parsed.questions.length} questions OK`);
+      // Filtrer et valider chaque question
+      const valid = parsed.questions.filter(q => {
+        const isValid = 
+          q.question && 
+          typeof q.question === 'string' &&
+          Array.isArray(q.options) && 
+          q.options.length === 4 &&
+          q.options.every(o => typeof o === 'string') &&
+          typeof q.correctAnswer === 'number' &&
+          q.correctAnswer >= 0 && 
+          q.correctAnswer <= 3;
+        
+        if (!isValid) {
+          console.warn("⚠️ Question invalide filtrée:", q);
+        }
+        
+        return isValid;
+      });
       
+      if (valid.length === 0) {
+        console.error("❌ Aucune question valide après filtrage");
+        console.error("Questions brutes:", parsed.questions);
+        logError("NO_VALID_QUESTIONS", `${parsed.questions.length} questions invalides`, 500);
+        throw new Error("Toutes les questions sont invalides");
+      }
+      
+      console.log(`✅ ${valid.length}/${parsed.questions.length} questions valides`);
+      
+      // Compter les médias
+      const withMedia = valid.filter(q => q.media).length;
+      console.log(`📷 ${withMedia} questions avec média (${Math.round(withMedia/valid.length*100)}%)`);
+      
+      logAction("QUIZ_GENERATED", `${valid.length} questions, ${withMedia} avec média`);
+      
+      // Sauvegarder les questions
       setQuestions(valid);
-      setQIdx(0); setMyScore(0); scoreRef.current=0;
-      setStreak(0); setCombo(1); setChosen(null); setFeedback(false);
+      setQIdx(0);
+      setMyScore(0);
+      scoreRef.current = 0;
+      setStreak(0);
+      setCombo(1);
+      setChosen(null);
+      setFeedback(false);
       
-      if(room && isHost){
-        const r=ROOMS[room.code];
-        if(r){ r.questions=valid; r.status="playing"; }
-        setRoom({...r});
+      // Pour les rooms multi
+      if (room && isHost) {
+        const r = ROOMS[room.code];
+        if (r) {
+          r.questions = valid;
+          r.status = "playing";
+        }
+        setRoom({ ...r });
       }
       
       setPage("quiz");
+      showToast(`✅ ${valid.length} questions générées !`, "info");
       
-    } catch(e){
-      console.error("💥 Error:", e);
-      // Message plus détaillé pour Failed to fetch
-      if(e.message.includes("Failed to fetch")){
-        showToast("Problème de connexion à l'API. Vérifie ta connexion internet.","error");
+    } catch (e) {
+      console.error("💥 Erreur globale:", e);
+      
+      // Log l'erreur
+      logError("QUIZ_GENERATION_FAILED", e.message, 500);
+      
+      // Messages d'erreur utilisateur clairs
+      let userMessage = "Erreur de génération";
+      
+      if (e.name === "AbortError") {
+        userMessage = "Timeout: l'API met trop de temps à répondre. Réessaie.";
+      } else if (e.message.includes("Failed to fetch")) {
+        userMessage = "Impossible de contacter l'API. Vérifie ta connexion internet.";
       } else {
-        showToast(e.message || "Erreur de génération","error");
+        userMessage = e.message;
       }
-      setPage(room?"lobby":"setup");
+      
+      showToast(userMessage, "error");
+      setPage(room ? "lobby" : "setup");
     }
   };
 
@@ -576,9 +814,6 @@ Règles:
     
     setPage("results");
   };
-
-  // Liste des rooms publiques
-  const publicRooms = Object.values(ROOMS).filter(r=>r.isPublic && r.status==="lobby");
 
   /* ═══════════════════════════════════════════════
      RENDER
@@ -935,7 +1170,7 @@ Règles:
         </div>
       )}
 
-      {/* ════ JOIN SCREEN - avec liste rooms publiques ════ */}
+      {/* ════ JOIN SCREEN - toutes les rooms (publiques + privées) ════ */}
       {page==="joinScreen" && (
         <div className={`min-h-screen bg-gradient-to-br ${bg} relative p-5 overflow-hidden`}>
           <FloatBg/>
@@ -943,41 +1178,81 @@ Règles:
             <button onClick={()=>setPage("home")} className={`flex items-center gap-2 px-5 py-2 rounded-2xl border mb-6 ${cardBg} ${textPri} font-bold hover:opacity-80`}>
               <ArrowLeft size={18}/> Retour
             </button>
-            <h2 className={`text-4xl font-black mb-5 ${textPri}`}>🔗 Rejoindre une partie</h2>
+            <h2 className={`text-4xl font-black mb-5 ${textPri}`}>🔗 Parties disponibles</h2>
 
-            {/* parties publiques */}
-            {publicRooms.length > 0 && (
+            {/* TOUTES les parties en lobby */}
+            {Object.values(ROOMS).filter(r => r.status === "lobby").length > 0 ? (
               <div className={`rounded-3xl border p-6 mb-5 ${cardBg}`}>
                 <h3 className={`text-xl font-black mb-4 flex items-center gap-2 ${textPri}`}>
-                  <Users size={22} className="text-emerald-400"/> Parties publiques ({publicRooms.length})
+                  <Users size={22} className="text-emerald-400"/> {Object.values(ROOMS).filter(r => r.status === "lobby").length} partie{Object.values(ROOMS).filter(r => r.status === "lobby").length > 1 ? "s" : ""} en attente
                 </h3>
                 <div className="grid sm:grid-cols-2 gap-4">
-                  {publicRooms.map(r=>(
+                  {Object.values(ROOMS).filter(r => r.status === "lobby").map(r=>(
                     <div key={r.code} className={`rounded-2xl border p-5 ${dark?"bg-slate-700/50 border-slate-600":"bg-gray-50 border-gray-200"}`}>
                       <div className="flex items-center justify-between mb-3">
-                        <div>
-                          <div className={`font-black text-lg ${textPri}`}>🎮 {r.host}</div>
-                          <div className={`text-sm ${textSec}`}>{r.players.length} joueur{r.players.length>1?"s":""} • {r.numQ}Q • {r.difficulty}</div>
+                        <div className="flex items-center gap-2">
+                          {r.isPublic ? 
+                            <Unlock size={18} className="text-emerald-400"/> : 
+                            <Lock size={18} className="text-orange-400"/>
+                          }
+                          <div>
+                            <div className={`font-black text-lg ${textPri}`}>{r.host}</div>
+                            <div className={`text-xs ${textSec}`}>
+                              {r.isPublic ? "🌐 Public" : "🔒 Privé"} • {r.players.length} joueur{r.players.length>1?"s":""}
+                            </div>
+                          </div>
                         </div>
                         <div className={`text-2xl font-black ${textPri}`}>{r.code}</div>
                       </div>
-                      <div className="flex flex-wrap gap-1 mb-3">
-                        {(r.categories||[]).slice(0,3).map(c=><span key={c} className={`text-xs px-2 py-1 rounded-full ${dark?"bg-violet-500/30 text-violet-300":"bg-violet-100 text-violet-700"}`}>{c.split(" ")[0]}</span>)}
-                        {(r.keywords||[]).slice(0,2).map(k=><span key={k} className={`text-xs px-2 py-1 rounded-full ${dark?"bg-cyan-500/30 text-cyan-300":"bg-cyan-100 text-cyan-700"}`}>🔍 {k}</span>)}
+                      <div className="flex items-center gap-2 mb-3 text-xs">
+                        <span className={`px-2 py-1 rounded ${dark?"bg-violet-500/30 text-violet-300":"bg-violet-100 text-violet-700"}`}>{r.numQ}Q</span>
+                        <span className={`px-2 py-1 rounded ${dark?"bg-blue-500/30 text-blue-300":"bg-blue-100 text-blue-700"}`}>{r.difficulty}</span>
                       </div>
-                      <button onClick={()=>joinRoom(r.code,"")} className="w-full py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold shadow-lg hover:shadow-xl hover:scale-[1.02] transition">
-                        Rejoindre
-                      </button>
+                      <div className="flex flex-wrap gap-1 mb-3">
+                        {(r.categories||[]).slice(0,2).map(c=><span key={c} className={`text-xs px-2 py-0.5 rounded-full ${dark?"bg-pink-500/30 text-pink-300":"bg-pink-100 text-pink-700"}`}>{c.split(" ")[0]}</span>)}
+                        {(r.keywords||[]).slice(0,2).map(k=><span key={k} className={`text-xs px-2 py-0.5 rounded-full ${dark?"bg-cyan-500/30 text-cyan-300":"bg-cyan-100 text-cyan-700"}`}>🔍 {k}</span>)}
+                      </div>
+                      
+                      {r.isPublic ? (
+                        <button onClick={()=>{logAction("JOIN_ROOM_PUBLIC", r.code);joinRoom(r.code,"");}} 
+                          className="w-full py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold shadow-lg hover:shadow-xl hover:scale-[1.02] transition">
+                          Rejoindre
+                        </button>
+                      ) : (
+                        <div className="space-y-2">
+                          <input 
+                            type="password" 
+                            placeholder="Mot de passe..." 
+                            id={`pwd-${r.code}`}
+                            className={`w-full px-3 py-2 rounded-xl text-sm border focus:outline-none focus:border-orange-500 ${inputBg}`}
+                          />
+                          <button onClick={()=>{
+                            const pwd = document.getElementById(`pwd-${r.code}`).value;
+                            logAction("JOIN_ROOM_PRIVATE_ATTEMPT", r.code);
+                            joinRoom(r.code, pwd);
+                          }}
+                            className="w-full py-2 rounded-xl bg-gradient-to-r from-orange-500 to-red-600 text-white font-bold shadow-lg hover:shadow-xl hover:scale-[1.02] transition">
+                            🔓 Déverrouiller
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               </div>
+            ) : (
+              <div className={`rounded-3xl border p-16 text-center mb-5 ${cardBg}`}>
+                <p className={`text-xl ${textSec}`}>Aucune partie disponible pour le moment</p>
+                <button onClick={()=>setPage("setup")} className="mt-4 px-6 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-pink-500 text-white font-bold">
+                  Créer une partie
+                </button>
+              </div>
             )}
 
-            {/* rejoindre avec code */}
+            {/* Rejoindre avec code manuel */}
             <div className={`rounded-3xl border p-6 ${cardBg}`}>
               <h3 className={`text-xl font-black mb-4 flex items-center gap-2 ${textPri}`}>
-                <Lock size={22} className="text-orange-400"/> Rejoindre avec code
+                <Tag size={22} className="text-blue-400"/> Rejoindre avec code
               </h3>
               <label className={`block text-sm font-bold uppercase tracking-wide mb-2 ${textSec}`}>Code de la room</label>
               <input value={joinRoomCode} onChange={e=>setJoinRoomCode(e.target.value.toUpperCase().slice(0,6))} placeholder="ABC123"
@@ -985,7 +1260,7 @@ Règles:
               <label className={`block text-sm font-bold uppercase tracking-wide mb-2 ${textSec}`}>Mot de passe (si privé)</label>
               <input type="password" value={joinRoomPwd} onChange={e=>setJoinRoomPwd(e.target.value)} placeholder="Optionnel"
                 className={`w-full px-5 py-4 text-lg rounded-2xl border-2 focus:outline-none focus:border-violet-500 ${inputBg} mb-4`}/>
-              <button onClick={()=>joinRoom(joinRoomCode,joinRoomPwd)}
+              <button onClick={()=>{logAction("JOIN_ROOM_MANUAL", joinRoomCode);joinRoom(joinRoomCode,joinRoomPwd);}}
                 className="w-full py-5 rounded-2xl bg-gradient-to-r from-blue-500 to-cyan-600 text-white text-2xl font-black shadow-xl hover:scale-[1.02] flex items-center justify-center gap-3">
                 <LogIn size={28}/> REJOINDRE
               </button>
