@@ -44,7 +44,38 @@ const randCode= () => {
   const c="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   return Array.from({length:6},()=>c[Math.floor(Math.random()*c.length)]).join("");
 };
-const ROOMS = {};
+
+/* ════════════════════════════════════════════════════
+   ROOMS - Persistance localStorage
+════════════════════════════════════════════════════ */
+const STORAGE_ROOMS = "quizmaster_rooms";
+
+const getRooms = () => {
+  try {
+    const rooms = JSON.parse(localStorage.getItem(STORAGE_ROOMS) || "{}");
+    // Cleanup des rooms de plus de 2h
+    const now = Date.now();
+    Object.keys(rooms).forEach(code => {
+      if (now - rooms[code].createdAt > 7200000) { // 2h
+        delete rooms[code];
+      }
+    });
+    localStorage.setItem(STORAGE_ROOMS, JSON.stringify(rooms));
+    return rooms;
+  } catch {
+    return {};
+  }
+};
+
+const saveRooms = (rooms) => {
+  try {
+    localStorage.setItem(STORAGE_ROOMS, JSON.stringify(rooms));
+  } catch (e) {
+    console.error("Erreur sauvegarde rooms:", e);
+  }
+};
+
+const ROOMS = getRooms(); // Charger au démarrage
 
 /* ════════════════════════════════════════════════════
    STORAGE - Comptes utilisateurs (localStorage)
@@ -263,6 +294,7 @@ export default function App() {
   const scoreRef               = useRef(0);
   const [joinRoomCode,setJoinRoomCode] = useState("");
   const [joinRoomPwd,setJoinRoomPwd]   = useState("");
+  const [roomsRefresh,setRoomsRefresh] = useState(0); // Pour forcer le reload
 
   // theme
   const bg      = dark ? "from-slate-950 via-slate-900 to-slate-950" : "from-violet-50 via-pink-50 to-fuchsia-50";
@@ -405,6 +437,21 @@ export default function App() {
     }
   },[page,room,isHost,stopPoller]);
 
+  /* ── rooms refresh sur joinScreen ── */
+  useEffect(()=>{
+    if(page==="joinScreen"){
+      // Recharger les rooms toutes les 2 secondes
+      const interval = setInterval(()=>{
+        const freshRooms = getRooms();
+        Object.keys(freshRooms).forEach(code => {
+          ROOMS[code] = freshRooms[code];
+        });
+        setRoomsRefresh(r => r + 1); // Force re-render
+      }, 2000);
+      return () => clearInterval(interval);
+    }
+  },[page]);
+
   /* ── particles spawn ── */
   const spawnParticles = (ok) => {
     const cols = ok ? ["#10b981","#facc15","#f59e0b","#22c55e"] : ["#ef4444","#991b1b"];
@@ -474,12 +521,14 @@ export default function App() {
       status:"lobby", questions:[], createdAt:Date.now()
     };
     ROOMS[r.code]=r;
+    saveRooms(ROOMS); // 💾 SAUVEGARDER
     setRoom(r); setIsHost(true); setPage("lobby");
     logAction("ROOM_CREATED", `Code: ${r.code}, Host: ${playerName}, ${r.isPublic?"Public":"Privé"}`);
   };
 
   const joinRoom = (code,pwd) => {
-    const r = ROOMS[code.toUpperCase()];
+    const rooms = getRooms(); // 🔄 RECHARGER les rooms
+    const r = rooms[code.toUpperCase()];
     if(!r){
       logError("JOIN_ROOM_FAILED", `Room ${code} introuvable`, 404);
       return showToast("Room introuvable !","error");
@@ -497,6 +546,8 @@ export default function App() {
       return showToast("Pseudo déjà pris !","error");
     }
     r.players.push({name:playerName,score:0,id:uid()});
+    ROOMS[r.code] = r; // Mettre à jour l'objet global
+    saveRooms(ROOMS); // 💾 SAUVEGARDER
     setRoom({...r}); setIsHost(false);
     setSelCats(r.categories||[]); setCustomKeywords(r.keywords||[]); setDiff(r.difficulty); setNumQ(r.numQ);
     setPage("lobby");
@@ -508,6 +559,7 @@ export default function App() {
     const r = ROOMS[room.code];
     if(r){
       r.players = r.players.filter(p=>p.id!==playerId);
+      saveRooms(ROOMS); // 💾 SAUVEGARDER
       setRoom({...r});
       showToast("Joueur exclu","info");
     }
@@ -515,8 +567,13 @@ export default function App() {
 
   const leaveRoom = () => {
     if(room){
-      if(isHost) delete ROOMS[room.code];
-      else { const r=ROOMS[room.code]; if(r) r.players=r.players.filter(p=>p.name!==playerName); }
+      if(isHost) {
+        delete ROOMS[room.code];
+      } else { 
+        const r=ROOMS[room.code]; 
+        if(r) r.players=r.players.filter(p=>p.name!==playerName); 
+      }
+      saveRooms(ROOMS); // 💾 SAUVEGARDER
     }
     stopPoller(); setRoom(null); setIsHost(false);
   };
@@ -725,6 +782,7 @@ ${numQ} questions exactement. 4 options par question.`;
         if (r) {
           r.questions = valid;
           r.status = "playing";
+          saveRooms(ROOMS); // 💾 SAUVEGARDER
         }
         setRoom({ ...r });
       }
@@ -776,7 +834,13 @@ ${numQ} questions exactement. 4 options par question.`;
     }
     if(room){
       const r=ROOMS[room.code];
-      if(r){ const pl=r.players.find(p=>p.name===playerName); if(pl) pl.score+=pts; }
+      if(r){ 
+        const pl=r.players.find(p=>p.name===playerName); 
+        if(pl) {
+          pl.score+=pts; 
+          saveRooms(ROOMS); // 💾 SAUVEGARDER
+        }
+      }
     }
     setTimeout(()=>{
       if(qIdx < questions.length-1){
@@ -792,7 +856,11 @@ ${numQ} questions exactement. 4 options par question.`;
     let board;
     if(room){
       const r=ROOMS[room.code];
-      if(r){ r.status="finished"; board=[...r.players].sort((a,b)=>b.score-a.score); }
+      if(r){ 
+        r.status="finished"; 
+        board=[...r.players].sort((a,b)=>b.score-a.score); 
+        saveRooms(ROOMS); // 💾 SAUVEGARDER
+      }
     }
     if(!board) board=[{name:playerName,score:finalScore,id:uid()}];
     setLeaderboard(board);
@@ -1178,7 +1246,21 @@ ${numQ} questions exactement. 4 options par question.`;
             <button onClick={()=>setPage("home")} className={`flex items-center gap-2 px-5 py-2 rounded-2xl border mb-6 ${cardBg} ${textPri} font-bold hover:opacity-80`}>
               <ArrowLeft size={18}/> Retour
             </button>
-            <h2 className={`text-4xl font-black mb-5 ${textPri}`}>🔗 Parties disponibles</h2>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className={`text-4xl font-black ${textPri}`}>🔗 Parties disponibles</h2>
+              <button 
+                onClick={() => {
+                  const freshRooms = getRooms();
+                  Object.keys(ROOMS).forEach(code => delete ROOMS[code]);
+                  Object.keys(freshRooms).forEach(code => ROOMS[code] = freshRooms[code]);
+                  setRoomsRefresh(r => r + 1);
+                  showToast("Rooms rechargées !","info");
+                }}
+                className={`px-4 py-2 rounded-xl border ${cardBg} ${textPri} font-bold hover:opacity-80 flex items-center gap-2`}
+              >
+                <RefreshCw size={18}/> Actualiser
+              </button>
+            </div>
 
             {/* TOUTES les parties en lobby */}
             {Object.values(ROOMS).filter(r => r.status === "lobby").length > 0 ? (
