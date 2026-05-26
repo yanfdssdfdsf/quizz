@@ -627,7 +627,7 @@ ${numQ} questions exactement. 4 options par question.`;
       const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
       
       const res = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=AIzaSyA3NokyxV5aWeCnXmoqr8ON7Bwv79oGMrs",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=AIzaSyBxcOvZdac2qOkcmyZSNOTAFS3F5G_NcTU",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
